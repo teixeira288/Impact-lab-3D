@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Impact Lab 3D — Diagnóstico</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 16px; background: #07090d; color: #e8edf5; font: 15px/1.45 system-ui, sans-serif; max-width: 760px; margin-inline: auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; } p.sub { color: #8c97a8; margin: 0 0 16px; }
+  .row { display: flex; gap: 10px; padding: 9px 0; border-bottom: 1px solid #ffffff1a; align-items: flex-start; }
+  .ic { width: 22px; flex: none; text-align: center; } .ok .ic { color: #3ecf6e; } .bad .ic { color: #ee3b3b; } .warn .ic { color: #ff9b2f; }
+  .t b { display: block; } .t small { color: #8c97a8; word-break: break-word; }
+  pre { background: #000; padding: 10px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
+  button, a.b { font: inherit; padding: 10px 14px; border-radius: 8px; border: 1px solid #ffffff30; background: #ffffff14; color: inherit; text-decoration: none; display: inline-block; margin: 6px 6px 0 0; }
+  a.go { background: #ff7a1a; color: #1a0b00; font-weight: 700; border-color: #ffae6b; }
+</style>
+</head>
+<body>
+<h1>Diagnóstico do Impact Lab 3D</h1>
+<p class="sub">Verifica se este navegador/endereço consegue rodar o jogo e mostra o que corrigir.</p>
+<div id="out"></div>
+<h3>Relatório (copie e envie se precisar de ajuda)</h3>
+<pre id="report">executando…</pre>
+<button id="copy">Copiar relatório</button> <a class="b go" href="index.html">Abrir o jogo</a>
+<script>
+const out = document.getElementById('out'), lines = [];
+function add(state, title, detail) {
+  const d = document.createElement('div'); d.className = 'row ' + state;
+  d.innerHTML = `<div class="ic">${state === 'ok' ? '✔' : state === 'bad' ? '✖' : '!'}</div><div class="t"><b></b><small></small></div>`;
+  d.querySelector('b').textContent = title; d.querySelector('small').textContent = detail || '';
+  out.appendChild(d); lines.push(`[${state.toUpperCase()}] ${title}${detail ? ' — ' + detail : ''}`);
+}
+async function main() {
+  add('ok', 'Endereço', location.href);
+  if (location.protocol === 'file:') add('bad', 'Aberto por file://', 'Módulos, fetch e WebGPU não funcionam assim. Sirva por HTTP(S): "python3 serve.py".');
+  else add('ok', 'Protocolo', location.protocol);
+  if (window.isSecureContext) add('ok', 'Contexto seguro (HTTPS/localhost)', 'WebGPU pode ser habilitada');
+  else add('bad', 'Contexto NÃO seguro', 'O Chrome desativa a WebGPU em http://<IP>. Use https://, http://localhost (adb reverse) ou a flag unsafely-treat-insecure-origin-as-secure.');
+  add('ok', 'Navegador', navigator.userAgent);
+  const m = /Chrome\/(\d+)/.exec(navigator.userAgent);
+  if (!m) add('warn', 'Não parece ser o Google Chrome', 'Use o Chrome (121+ no Android 12+).');
+  else if (+m[1] < 121) add('warn', 'Chrome ' + m[1], 'Atualize para a versão 121 ou superior.');
+  if (/Android/.test(navigator.userAgent)) { const a = /Android (\d+)/.exec(navigator.userAgent); if (a && +a[1] < 12) add('warn', 'Android ' + a[1], 'WebGPU no Chrome exige Android 12+ (GPU Qualcomm ou ARM).'); }
+  add('ok', 'Tela', `${screen.width}×${screen.height} · DPR ${devicePixelRatio} · toque: ${navigator.maxTouchPoints || 0} pontos · ${navigator.hardwareConcurrency || '?'} núcleos${navigator.deviceMemory ? ' · ~' + navigator.deviceMemory + ' GB' : ''}`);
+  add(typeof WebAssembly === 'object' ? 'ok' : 'bad', 'WebAssembly', typeof WebAssembly === 'object' ? 'suportado' : 'ausente');
+
+  // arquivos do jogo
+  for (const f of ['index.html', 'wasm/sim.wasm', 'shaders/lighting.wgsl', 'shaders/vehicle.wgsl', 'shaders/scene.wgsl', 'shaders/deformation.wgsl', 'shaders/particles.wgsl', 'src/game.js', 'styles/main.css']) {
+    try { const r = await fetch(f, { cache: 'no-store' }); add(r.ok ? 'ok' : 'bad', 'Arquivo ' + f, `HTTP ${r.status}${r.headers.get('content-type') ? ' · ' + r.headers.get('content-type') : ''}`); }
+    catch (e) { add('bad', 'Arquivo ' + f, 'falha de rede: ' + e.message); }
+  }
+  try {
+    const bytes = await (await fetch('wasm/sim.wasm', { cache: 'no-store' })).arrayBuffer();
+    const env = { sin: Math.sin, cos: Math.cos, tan: Math.tan, atan2: Math.atan2, exp: Math.exp, tanh: Math.tanh, pow: Math.pow };
+    const { instance } = await WebAssembly.instantiate(bytes, { env });
+    add('ok', 'Módulo físico (WASM)', `instanciado · versão ${instance.exports.sim_version()}`);
+  } catch (e) { add('bad', 'Módulo físico (WASM)', e.message); }
+
+  // WebGPU
+  if (!navigator.gpu) { add('bad', 'navigator.gpu ausente', 'WebGPU indisponível (conexão não segura, Chrome antigo, aparelho sem suporte ou desativada em chrome://flags).'); return; }
+  try {
+    const ad = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+    if (!ad) { add('bad', 'Nenhum adaptador WebGPU', 'GPU/driver não suportado ou lista de bloqueio do Chrome (chrome://gpu).'); return; }
+    const i = ad.info || {};
+    add('ok', 'Adaptador WebGPU', [i.vendor, i.architecture, i.device, i.description].filter(Boolean).join(' · ') || 'ok');
+    const need = { maxTextureDimension2D: 4096, maxStorageBuffersPerShaderStage: 5, maxBindGroups: 3, maxVertexBuffers: 4, maxUniformBufferBindingSize: 65536 };
+    for (const [k, v] of Object.entries(need)) add(ad.limits[k] >= v ? 'ok' : 'bad', 'Limite ' + k, `${ad.limits[k]} (mínimo usado: ${v})`);
+    add(ad.features.has('timestamp-query') ? 'ok' : 'warn', 'timestamp-query', ad.features.has('timestamp-query') ? 'disponível (tempo de GPU na telemetria)' : 'ausente — só afeta a telemetria');
+    const dev = await ad.requestDevice();
+    const fmt = navigator.gpu.getPreferredCanvasFormat();
+    add('ok', 'Dispositivo criado', 'formato do canvas: ' + fmt);
+    // MSAA 4x + depth32float (usados pelo renderizador)
+    dev.pushErrorScope('validation');
+    const t1 = dev.createTexture({ size: [64, 64], sampleCount: 4, format: fmt, usage: GPUTextureUsage.RENDER_ATTACHMENT });
+    const t2 = dev.createTexture({ size: [64, 64], sampleCount: 4, format: 'depth32float', usage: GPUTextureUsage.RENDER_ATTACHMENT });
+    const err = await dev.popErrorScope();
+    add(err ? 'bad' : 'ok', 'MSAA 4x + depth32float', err ? err.message : 'suportado');
+    t1.destroy(); t2.destroy();
+    // compila todos os shaders com o mesmo procedimento do jogo
+    const get = async (n) => (await fetch('shaders/' + n + '.wgsl', { cache: 'no-store' })).text();
+    const [lighting, vehicle, scene, deform, particles] = await Promise.all(['lighting', 'vehicle', 'scene', 'deformation', 'particles'].map(get));
+    const [pc, pr] = particles.split('//#RENDER');
+    const mods = { 'vehicle.wgsl': lighting + '\n' + vehicle, 'scene.wgsl': lighting + '\n' + scene, 'deformation.wgsl': deform, 'particles (compute)': pc, 'particles (render)': lighting + '\n' + pc.split('@group')[0] + pr };
+    for (const [n, code] of Object.entries(mods)) {
+      const info = await dev.createShaderModule({ code }).getCompilationInfo();
+      const errs = info.messages.filter((x) => x.type === 'error');
+      add(errs.length ? 'bad' : 'ok', 'Shader ' + n, errs.length ? errs.map((e) => `${e.lineNum}:${e.linePos} ${e.message}`).join(' | ') : 'compilou');
+    }
+    dev.destroy();
+  } catch (e) { add('bad', 'Erro WebGPU', e.message || String(e)); }
+}
+main().catch((e) => add('bad', 'Erro inesperado', e.message)).finally(() => {
+  document.getElementById('report').textContent = lines.join('\n');
+  const bad = lines.filter((l) => l.startsWith('[BAD]')).length;
+  add(bad ? 'bad' : 'ok', bad ? bad + ' problema(s) encontrado(s)' : 'Tudo certo', bad ? 'Corrija os itens em vermelho acima.' : 'Este navegador deve rodar o jogo. Se estiver lento, use Configurações > Qualidade Baixa.');
+});
+document.getElementById('copy').onclick = () => { navigator.clipboard && navigator.clipboard.writeText(document.getElementById('report').textContent); };
+</script>
+</body>
+</html>

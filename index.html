@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#07090d">
+<title>Impact Lab 3D</title>
+<meta name="description" content="Simulador de impacto veicular em WebGPU + física em WebAssembly.">
+<link rel="stylesheet" href="styles/main.css">
+<link rel="stylesheet" href="styles/garage.css">
+<link rel="stylesheet" href="styles/hud.css">
+</head>
+<body data-screen="loading">
+<canvas id="gpu" aria-label="Cena 3D do simulador"></canvas>
+
+<!-- carregamento / erros -->
+<div id="loading" class="overlay center">
+  <div class="logo">IMPACT <b>LAB</b> 3D</div>
+  <div id="loading-msg" class="muted">Inicializando WebGPU e módulo físico…</div>
+  <div class="spinner"></div>
+</div>
+<div id="fatal" class="overlay center hidden" role="alert">
+  <div class="card err">
+    <h2 id="fatal-title">Não foi possível iniciar</h2>
+    <p id="fatal-msg"></p>
+    <pre id="fatal-detail"></pre>
+    <ul id="fatal-help"></ul>
+    <button class="btn" id="fatal-retry">Tentar novamente</button>
+  </div>
+</div>
+<div id="toast" class="toast hidden" role="status"></div>
+
+<!-- menu principal -->
+<section id="screen-menu" class="screen hidden">
+  <div class="menu-box">
+    <div class="logo big">IMPACT <b>LAB</b> 3D</div>
+    <div class="tag">Simulador de impacto veicular</div>
+    <nav>
+      <button class="btn big" data-go="play">JOGAR</button>
+      <button class="btn big" data-go="garage">GARAGEM</button>
+      <button class="btn big" data-go="settings">CONFIGURAÇÕES</button>
+      <button class="btn big" data-go="about">SOBRE</button>
+      <button class="btn big ghost" data-go="exit">SAIR</button>
+      <button class="btn small ghost js-fs" type="button">⛶ Tela cheia</button>
+    </nav>
+    <div class="foot muted">WebGPU · WGSL · C → WebAssembly</div>
+  </div>
+</section>
+
+<!-- garagem -->
+<section id="screen-garage" class="screen hidden">
+  <header class="topbar">
+    <button class="btn small ghost" data-go="menu">← Menu</button>
+    <div class="title">GARAGEM</div>
+    <div class="tabs"><button class="btn small sel" data-tab="left">Veículo</button><button class="btn small" data-tab="right">Teste</button></div>
+    <button class="btn small primary" id="start-test-top">INICIAR ▶</button>
+  </header>
+  <div class="garage-layout" data-tab="left">
+    <aside class="panel left">
+      <h3>Veículo</h3>
+      <div class="carousel">
+        <button class="arrow" id="veh-prev" aria-label="Veículo anterior">‹</button>
+        <div id="veh-cards" class="veh-cards"></div>
+        <button class="arrow" id="veh-next" aria-label="Próximo veículo">›</button>
+      </div>
+      <h3>Cor</h3>
+      <div id="swatches" class="swatches"></div>
+      <label class="row">Cor personalizada <input type="color" id="paint-custom" value="#2a6cff"></label>
+      <label class="row">Acabamento
+        <select id="paint-finish"><option value="0.35">Metálico</option><option value="0.0">Sólido</option><option value="0.9">Perolizado</option></select>
+      </label>
+      <h3>Motorização</h3>
+      <div id="motors" class="seg"></div>
+      <label class="row">Carga extra <span id="extra-val">0 kg</span></label>
+      <input type="range" id="extra" min="0" max="400" step="10" value="0">
+    </aside>
+    <aside class="panel right">
+      <h3>Velocidade-alvo de impacto</h3>
+      <div id="speeds" class="chips"></div>
+      <label class="row">Personalizada <span><input type="number" id="speed-custom" min="5" max="250" step="1" placeholder="km/h"> km/h</span></label>
+      <div class="note" id="launch-note"></div>
+      <h3>Obstáculo</h3>
+      <div id="obstacles" class="obst"></div>
+      <div class="grid2">
+        <label>Face do veículo
+          <select id="face"><option value="0">Frontal</option><option value="1">Traseira</option><option value="2">Lateral esquerda</option><option value="3">Lateral direita</option></select>
+        </label>
+        <label>Ângulo <span id="angle-val">0°</span>
+          <input type="range" id="angle" min="-45" max="45" step="1" value="0">
+        </label>
+        <label>Deslocamento lateral <span id="offset-val">0,0 m</span>
+          <input type="range" id="offset" min="-1.2" max="1.2" step="0.05" value="0">
+        </label>
+        <label class="check"><input type="checkbox" id="manual"> Direção manual</label>
+      </div>
+      <h3>Especificações (simuladas)</h3>
+      <table class="specs" id="specs"></table>
+      <button class="btn primary big" id="start-test">INICIAR TESTE</button>
+    </aside>
+  </div>
+</section>
+
+<!-- configurações -->
+<section id="screen-settings" class="screen hidden">
+  <header class="topbar"><button class="btn small ghost" data-go="menu">← Menu</button><div class="title">CONFIGURAÇÕES</div><span></span></header>
+  <div class="card narrow">
+    <label class="row">Qualidade gráfica
+      <select id="set-quality"><option value="low">Baixa</option><option value="med">Média</option><option value="high" selected>Alta</option></select></label>
+    <label class="row">Horário do cenário
+      <select id="set-env"><option value="day">Dia</option><option value="dusk">Entardecer</option><option value="night">Noite</option></select></label>
+    <label class="row">Volume <input type="range" id="set-volume" min="0" max="1" step="0.05" value="0.5"></label>
+    <label class="row">Áudio <input type="checkbox" id="set-audio" checked></label>
+    <label class="row">Tremor de câmera <input type="checkbox" id="set-shake" checked></label>
+    <label class="row">Partículas e estilhaços <input type="checkbox" id="set-particles" checked></label>
+    <label class="row">Mostrar telemetria <input type="checkbox" id="set-telemetry"></label>
+    <h3>Controles</h3>
+    <table class="keys">
+      <tr><td>W / ↑ · S / ↓ · A D / ← →</td><td>Acelerar · Frear · Direção (modo manual)</td></tr>
+      <tr><td>Espaço</td><td>Freio</td></tr>
+      <tr><td>P / Esc</td><td>Pausar</td></tr>
+      <tr><td>R · T · B</td><td>Reiniciar · Voltar a 200 m · Restaurar carroceria</td></tr>
+      <tr><td>1–6 · V</td><td>Câmeras · Próxima câmera</td></tr>
+      <tr><td>M · , .</td><td>Câmera lenta · Velocidade de reprodução</td></tr>
+      <tr><td>H · F</td><td>Ocultar HUD · Telemetria</td></tr>
+      <tr><td>Gamepad</td><td>RT/LT, analógico esq., A reinicia, B câmera, Start pausa</td></tr>
+    </table>
+    <button class="btn" id="set-reset">Restaurar padrões</button>
+  </div>
+</section>
+
+<!-- sobre -->
+<section id="screen-about" class="screen hidden">
+  <header class="topbar"><button class="btn small ghost" data-go="menu">← Menu</button><div class="title">SOBRE</div><span></span></header>
+  <div class="card narrow about">
+    <p><b>Impact Lab 3D</b> é um simulador educacional de impacto veicular. A física roda em C compilado para WebAssembly
+    (passo fixo de 1/480 s, detecção contínua de colisão) e a imagem é gerada por WebGPU (WGSL), com deformação de malha calculada na GPU.</p>
+    <h3>O que o modelo é — e o que não é</h3>
+    <ul>
+      <li>É um modelo <b>simplificado</b> de corpo rígido com esmagamento (lei de força-deformação com histerese). <b>Não é</b> análise por elementos finitos.</li>
+      <li>As desacelerações de pico (em g) são as do corpo rígido e <b>não</b> representam o que um ocupante sentiria; não há manequim nem airbags.</li>
+      <li>Para que velocidades altas sejam atingidas dentro de 200 m, o simulador calcula a <b>velocidade de lançamento</b>; a velocidade real de impacto é medida e exibida separadamente da velocidade-alvo.</li>
+      <li>Os dados de dano por zona vêm da simulação, não de uma tabela fixa. Não use para engenharia ou segurança real.</li>
+    </ul>
+    <div class="muted" id="about-sys"></div>
+  </div>
+</section>
+
+<!-- HUD -->
+<section id="hud" class="hidden">
+  <div class="hud-top">
+    <button class="btn small ghost" id="hud-exit" title="Voltar à garagem">← Garagem</button>
+    <div id="hud-title" class="hud-title"></div>
+    <button class="btn small ghost js-fs" type="button" title="Tela cheia" aria-label="Tela cheia">⛶</button>
+    <div class="hud-cams" id="cams" role="group" aria-label="Câmeras"></div>
+  </div>
+
+  <div class="hud-left">
+    <div class="gauge-box">
+      <canvas id="gauge" width="260" height="260"></canvas>
+      <div class="gauge-num"><span id="g-speed">0</span><small>km/h</small></div>
+    </div>
+    <div class="readouts">
+      <div><label>Distância</label><b id="r-dist">200,0 m</b></div>
+      <div><label>Tempo</label><b id="r-time">0,00 s</b></div>
+      <div><label>Força G</label><b id="r-g">0,0 g</b></div>
+    </div>
+    <div class="distbar" title="Distância até o obstáculo"><div class="fill" id="distfill"></div><div class="ticks"><i>200</i><i>150</i><i>100</i><i>50</i><i>0</i></div></div>
+  </div>
+
+  <div class="hud-right">
+    <div class="panel dmg">
+      <h3>Danos por região</h3>
+      <div id="dmg-map"></div>
+      <div id="dmg-detail" class="dmg-detail muted">Clique em uma região.</div>
+      <div class="dmg-total">Dano global <b id="dmg-total">0%</b></div>
+    </div>
+    <div class="panel tele hidden" id="tele">
+      <h3>Telemetria</h3>
+      <table class="specs mono" id="tele-table"></table>
+      <canvas id="gcurve" width="260" height="70"></canvas>
+    </div>
+  </div>
+
+  <div class="hud-bottom">
+    <div class="simctl">
+      <button class="btn" id="b-start" title="Enter">▶ Iniciar</button>
+      <button class="btn" id="b-pause" title="P">⏸ Pausar</button>
+      <button class="btn" id="b-restart" title="R">⟲ Reiniciar</button>
+      <button class="btn" id="b-reset200" title="T ou B — volta a 200 m e restaura a carroceria">⇤ 200 m · Restaurar</button>
+      <button class="btn" id="b-slow" title="M">🐢 Câmera lenta</button>
+      <label class="rate">Reprodução
+        <select id="b-rate"><option value="0.05">0,05×</option><option value="0.1">0,1×</option><option value="0.25">0,25×</option><option value="0.5">0,5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select>
+      </label>
+    </div>
+    <div id="phase" class="phase"></div>
+  </div>
+
+  <div class="touch hidden" id="touch">
+    <div class="tl"><button data-touch="left">◀</button><button data-touch="right">▶</button></div>
+    <div class="tr"><button data-touch="brake">FREIO</button><button data-touch="throttle">ACEL.</button></div>
+  </div>
+
+  <div id="result" class="result hidden" role="dialog" aria-label="Resultado do teste">
+    <div class="card">
+      <h2>Resultado do teste</h2>
+      <div id="result-body"></div>
+      <div class="result-btns">
+        <button class="btn primary" id="res-again">Repetir</button>
+        <button class="btn" id="res-garage">Garagem</button>
+        <button class="btn" id="res-close">Fechar</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script type="module" src="src/game.js"></script>
+</body>
+</html>
